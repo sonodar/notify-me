@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and set your own values.
+# terraform.tfvars is git-ignored; never commit personal values.
+
+# AWS region to deploy into.
+aws_region = "ap-northeast-1"
+
+# Prefix for resource names and SSM parameter paths (/<name_prefix>/...).
+name_prefix = "notify-me"
+
+# Deploy the userId-capture webhook. Set to false after you captured your userId.
+enable_webhook = true

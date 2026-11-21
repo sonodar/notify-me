@@ -1,0 +1,9 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform/build/
+*.tfvars
+!terraform.tfvars.example
+.env
+__pycache__/
+*.pyc
