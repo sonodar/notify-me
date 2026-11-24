@@ -1,9 +1,11 @@
 terraform {
-  required_version = ">= 1.5"
+  # >= 1.11 is required for write-only arguments (value_wo).
+  required_version = ">= 1.11"
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
+      source = "hashicorp/aws"
+      # value_wo on aws_ssm_parameter was added in v5.87.0.
+      version = ">= 5.87"
     }
     archive = {
       source  = "hashicorp/archive"
@@ -25,41 +27,36 @@ locals {
 
 # ---------------------------------------------------------------------------
 # SSM Parameter Store: secrets live here, NOT in Terraform state.
-# Terraform only creates placeholders; real values are written afterwards
-# with `aws ssm put-parameter --overwrite` (see README), and
-# lifecycle.ignore_changes keeps Terraform from reverting them.
+# Values are passed with the write-only argument value_wo, so secret values
+# are never stored in Terraform state or plan files. Set the corresponding
+# variables (terraform.tfvars / TF_VAR_*) to write a real value, and bump
+# var.ssm_value_version whenever you rotate one of them. Variables left unset
+# fall back to a placeholder; you can also overwrite values afterwards with
+# `aws ssm put-parameter --overwrite` -- Terraform never reads value_wo back,
+# so CLI-written values are not reverted.
 # ---------------------------------------------------------------------------
 resource "aws_ssm_parameter" "channel_access_token" {
-  name        = "${local.ssm_prefix}/channel-access-token"
-  description = "LINE Messaging API channel access token (long-lived)"
-  type        = "SecureString"
-  value       = "REPLACE_ME"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
+  name             = "${local.ssm_prefix}/channel-access-token"
+  description      = "LINE Messaging API channel access token (long-lived)"
+  type             = "SecureString"
+  value_wo         = coalesce(var.line_channel_access_token, "REPLACE_ME")
+  value_wo_version = var.ssm_value_version
 }
 
 resource "aws_ssm_parameter" "channel_secret" {
-  name        = "${local.ssm_prefix}/channel-secret"
-  description = "LINE Messaging API channel secret (webhook signature verification)"
-  type        = "SecureString"
-  value       = "REPLACE_ME"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
+  name             = "${local.ssm_prefix}/channel-secret"
+  description      = "LINE Messaging API channel secret (webhook signature verification)"
+  type             = "SecureString"
+  value_wo         = coalesce(var.line_channel_secret, "REPLACE_ME")
+  value_wo_version = var.ssm_value_version
 }
 
 resource "aws_ssm_parameter" "user_id" {
-  name        = "${local.ssm_prefix}/user-id"
-  description = "Destination LINE userId (U...) for push messages"
-  type        = "String"
-  value       = "REPLACE_ME"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
+  name             = "${local.ssm_prefix}/user-id"
+  description      = "Destination LINE userId (U...) for push messages"
+  type             = "String"
+  value_wo         = coalesce(var.line_user_id, "REPLACE_ME")
+  value_wo_version = var.ssm_value_version
 }
 
 # ---------------------------------------------------------------------------

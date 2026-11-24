@@ -25,7 +25,7 @@
 - **重複防止**: Lambda の再試行時に同じ通知が二重に届かないよう、`X-Line-Retry-Key` に SQS MessageId 由来の UUID を使います（24時間有効）。
 - **部分失敗応答**: SQS バッチ内の一部だけ失敗した場合、そのレコードだけを再試行対象として返します（`ReportBatchItemFailures`）。
 - **恒久エラーは捨てる**: ブロック済み・不正な宛先など、再試行しても直らない 4xx（429除く）はログに残して破棄し、無駄なリトライをしません。
-- **秘密情報は SSM に集約**: チャネルアクセストークン等は Terraform の state に入れず、SSM Parameter Store（SecureString）に置きます。Terraform はプレースホルダを作るだけです。
+- **秘密情報は SSM に集約**: チャネルアクセストークン等は SSM Parameter Store（SecureString）に置きます。Terraform への受け渡しは環境変数 `TF_VAR_*` で行い、SSM へは write-only 引数 `value_wo` で書くため、値は Terraform の state にも plan にも残りません。
 - **追加ライブラリ不要**: Lambda は Python 標準ライブラリ（`urllib`）+ `boto3`（ランタイム同梱）のみ。
 
 ## 前提
@@ -41,15 +41,16 @@
 
 | パラメータ | 中身 | 置き場所 | 渡し方 |
 | --- | --- | --- | --- |
-| チャネルアクセストークン | LINE Messaging API（長期） | SSM `/${name_prefix}/channel-access-token`（SecureString） | デプロイ後に `aws ssm put-parameter --overwrite`（手順3） |
-| チャネルシークレット | Webhook 署名検証用 | SSM `/${name_prefix}/channel-secret`（SecureString） | 同上 |
-| userId | 通知先の LINE ユーザーID（`U...`） | SSM `/${name_prefix}/user-id` | Webhook で取得してから `put-parameter`（手順4） |
+| チャネルアクセストークン | LINE Messaging API（長期） | SSM `/${name_prefix}/channel-access-token`（SecureString） | apply 時に環境変数 `TF_VAR_line_channel_access_token` で渡す |
+| チャネルシークレット | Webhook 署名検証用 | SSM `/${name_prefix}/channel-secret`（SecureString） | apply 時に環境変数 `TF_VAR_line_channel_secret` で渡す |
+| userId | 通知先の LINE ユーザーID（`U...`） | SSM `/${name_prefix}/user-id` | Webhook で取得後、環境変数 `TF_VAR_line_user_id` で渡して再 apply（手順4） |
 | `aws_region` | デプロイ先リージョン | Terraform 変数 | `terraform.tfvars`（`terraform.tfvars.example` をコピー） |
 | `name_prefix` | リソース名と SSM パスの接頭辞 | Terraform 変数 | 同上。デフォルトは `notify-me` |
+| `ssm_value_version` | write-only 値の版数 | Terraform 変数 | 秘密のいずれかを差し替えるときに +1 する |
 | AWS アカウント ID | ARN 等に含まれる | **どこにも書かない** | Terraform が `aws_caller_identity` で実行時に取得 |
 | Topic ARN / Queue URL | プログラム側の送信先 | Terraform の出力 | 呼び出し側プログラムへ環境変数等で渡す（`.env.example` 参照） |
 
-Terraform の state に秘密情報を入れないため、Terraform は SSM パラメータの器（プレースホルダ値）だけを作り、実値は CLI で上書きします（`lifecycle.ignore_changes` で巻き戻り防止済み）。
+SSM への書き込みは write-only 引数 `value_wo` を使うため、秘密の値は Terraform の state / plan に残りません（要 Terraform >= 1.11、AWS プロバイダ >= 5.87）。値を差し替えるときは、対象の `TF_VAR_*` を新しい値にして `ssm_value_version` を +1 し、再 apply します。**版数を上げると3つのパラメータすべてが再送される**ため、その際は3つとも `TF_VAR_*` を設定してください（未設定のものはプレースホルダで上書きされます）。
 
 ## 料金の目安
 
@@ -60,42 +61,39 @@ Terraform の state に秘密情報を入れないため、Terraform は SSM パ
 
 ### 1. LINE 側: Messaging API チャネルを作る
 
-1. [LINE Developers コンソール](https://developers.line.biz/console/) でプロバイダーを作成（既存でも可）。
-2. **Messaging API チャネル** を新規作成し、紐づく LINE 公式アカウントを用意する。
-3. チャネル基本設定で **チャネルシークレット** を控える。
-4. Messaging API 設定で **チャネルアクセストークン（長期）** を発行して控える。
+2024年9月以降、チャネルは LINE Developers コンソールから直接作れません。先に公式アカウントを作り、管理画面で Messaging API を有効化します。
+
+1. PCブラウザで [LINE Official Account Manager](https://manager.line.biz/) にログインし、LINE公式アカウントを作成する（無料のコミュニケーションプラン）。
+2. 作成したアカウントの「設定 → Messaging API」で **「Messaging APIを利用する」** を押し、開発者情報を登録して、プロバイダーを選択（既存 or 新規作成。後から変更不可）→ 同意して有効化する。
+3. LINE Developers コンソールで、そのプロバイダー配下にできたチャネルを開き、「チャネル基本設定」で **チャネルシークレット** を控える。
+4. 「Messaging API 設定」で **チャネルアクセストークン（長期）** を発行して控える。
 5. 応答設定で「あいさつメッセージ」「応答メッセージ」を **オフ** にする（通知専用のため）。
 6. 公式アカウントを自分の LINE で **友だち追加** する（QRコードは Messaging API 設定画面にあります）。
 
 ### 2. AWS 側: デプロイ
 
+秘密情報はファイルに書かず、環境変数で渡します（値は自分の控えから入れてください）。
+
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
 # terraform.tfvars を自分の値に編集する（aws_region / name_prefix / enable_webhook）
+
+export TF_VAR_line_channel_access_token='<your long-lived channel access token>'
+export TF_VAR_line_channel_secret='<your channel secret>'
+# TF_VAR_line_user_id は手順4で取得してから設定する
+
 terraform init
 terraform apply
 ```
 
 出力の `webhook_url`、`sns_topic_arn`、`sqs_queue_url` を控えます。
 
-### 3. 秘密情報を SSM に入れる
+### 3. 秘密情報の反映を確認する
 
-Terraform が作ったプレースホルダを、実際の値で上書きします。**トークンを Git やチャットに貼らないでください。**
+手順2で `TF_VAR_*` を設定して apply していれば、トークンとシークレットは既に SSM に入っています。追加作業はありません。
 
-```bash
-# 値は自分の環境のものに置き換える（このファイルには実値を残さない）
-REGION='<your AWS region>'            # terraform.tfvars の aws_region と同じ値
-PREFIX='<your name_prefix>'           # terraform.tfvars の name_prefix と同じ値（デフォルト: notify-me）
-
-aws ssm put-parameter --region "$REGION" --overwrite \
-  --name "/$PREFIX/channel-access-token" \
-  --type SecureString --value '<your long-lived channel access token>'
-
-aws ssm put-parameter --region "$REGION" --overwrite \
-  --name "/$PREFIX/channel-secret" \
-  --type SecureString --value '<your channel secret>'
-```
+値を差し替える（ローテーションする）ときは、新しい値を `TF_VAR_*` に設定し、`terraform.tfvars` の `ssm_value_version` を +1 して再 apply します。その際は3つの `TF_VAR_*` をすべて設定してください（未設定分はプレースホルダに戻ります）。
 
 ### 4. 自分の userId を取得する
 
@@ -106,6 +104,9 @@ Push の宛先 `userId` は、LINE アプリに表示される ID とは別の�
 3. CloudWatch Logs で userId を拾う:
 
 ```bash
+REGION='<your AWS region>'   # terraform.tfvars の aws_region と同じ値
+PREFIX='<your name_prefix>'  # terraform.tfvars の name_prefix と同じ値（デフォルト: notify-me）
+
 aws logs filter-log-events --region "$REGION" \
   --log-group-name "/aws/lambda/$PREFIX-webhook" \
   --filter-pattern 'USER_ID_CAPTURED' \
@@ -113,12 +114,14 @@ aws logs filter-log-events --region "$REGION" \
 # => USER_ID_CAPTURED U... event_type=message
 ```
 
-4. 拾った userId を SSM に入れる:
+4. 拾った userId を SSM に入れる（トークン／シークレットと合わせて3つとも設定し、版数を上げて再 apply）:
 
 ```bash
-aws ssm put-parameter --region "$REGION" --overwrite \
-  --name "/$PREFIX/user-id" \
-  --type String --value '<captured userId>'
+export TF_VAR_line_channel_access_token='<your long-lived channel access token>'
+export TF_VAR_line_channel_secret='<your channel secret>'
+export TF_VAR_line_user_id='<captured userId>'
+# terraform.tfvars の ssm_value_version を +1 してから
+terraform apply
 ```
 
 5. （任意）取得が終わったら Webhook は不要です。`terraform apply -var="enable_webhook=false"` で撤去できます。

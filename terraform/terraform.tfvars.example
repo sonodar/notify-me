@@ -1,5 +1,15 @@
 # Copy to terraform.tfvars and set your own values.
 # terraform.tfvars is git-ignored; never commit personal values.
+#
+# NOTE: Secrets (LINE token / secret / userId) do NOT belong in this file.
+# Pass them as TF_VAR_* environment variables at apply time instead:
+#
+#   export TF_VAR_line_channel_access_token='<your long-lived channel access token>'
+#   export TF_VAR_line_channel_secret='<your channel secret>'
+#   export TF_VAR_line_user_id='<your userId>'   # if already known
+#
+# They are written to SSM via value_wo, so they never land in state or plan.
+# When you rotate one of them, also bump ssm_value_version below.
 
 # AWS region to deploy into.
 aws_region = "ap-northeast-1"
@@ -9,3 +19,7 @@ name_prefix = "notify-me"
 
 # Deploy the userId-capture webhook. Set to false after you captured your userId.
 enable_webhook = true
+
+# Increment this whenever you change one of the TF_VAR_line_* values above,
+# so Terraform sends the new value to SSM (value_wo_version).
+ssm_value_version = 1

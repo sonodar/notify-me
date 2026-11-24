@@ -33,3 +33,30 @@ variable "message_retention_seconds" {
   type        = number
   default     = 345600
 }
+
+variable "line_channel_access_token" {
+  description = "LINE Messaging API channel access token (long-lived). Leave unset to create a placeholder and write the real value with the AWS CLI afterwards."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "line_channel_secret" {
+  description = "LINE Messaging API channel secret. Leave unset to create a placeholder and write the real value with the AWS CLI afterwards."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "line_user_id" {
+  description = "Destination LINE userId (U...). Leave unset to create a placeholder and write the real value with the AWS CLI afterwards."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "ssm_value_version" {
+  description = "Version counter for the write-only SSM values (value_wo_version). Increment it whenever you change one of the line_* variables above so Terraform sends the new value."
+  type        = number
+  default     = 1
+}
